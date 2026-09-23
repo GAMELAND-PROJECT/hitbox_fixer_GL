@@ -60,6 +60,7 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     target_compile_options(HitboxFix PRIVATE 
         /std:c++20
         /ZI
+        /FS
         /Zc:strictStrings-
     )
     set_target_properties(subhook PROPERTIES
