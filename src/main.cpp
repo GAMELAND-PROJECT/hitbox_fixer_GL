@@ -112,12 +112,17 @@ void TestFunc(uint32_t host_id, float t, float frac, uintptr_t sequence)
 #endif
 void (StartFramePost)()
 {
+	if (!api)
+	{
+		RETURN_META(MRES_IGNORED);
+	}
+
 	auto maxclients = api->GetMaxClients();
 	ServerFrameId++;
 	for (int id = 1; id <= maxclients; id++)
 	{
 		auto cl = api->GetClient(id-1);
-		if (!cl || !cl->active)
+		if (!cl || !cl->active || !cl->edict)
 			continue;
 
 		entity_state_t state;
@@ -133,9 +138,8 @@ void (StartFramePost)()
 		state.controller[1] = cl->edict->v.controller[1];
 		state.controller[2] = cl->edict->v.controller[2];
 		state.controller[3] = cl->edict->v.controller[3];
-		state.blending[0] = cl->edict->v.blending[1];
+		state.blending[0] = cl->edict->v.blending[0];
 		state.blending[1] = cl->edict->v.blending[1];
-		state.controller[3] = cl->edict->v.controller[3];
 		ProcessAnimParams(id-1, 0,
 			player_params_history[0].hist[SV_UPDATE_MASK & (ServerFrameId)][id-1],
 			player_params_history[0].hist[SV_UPDATE_MASK & (ServerFrameId - 1)][id-1],
@@ -148,7 +152,17 @@ void (StartFramePost)()
 }
 void (PlayerPreThinkPre)(edict_t* pEntity)
 {
+	if (!api || !pEntity)
+	{
+		RETURN_META(MRES_IGNORED);
+	}
+
 	auto host_id = ENTINDEX(pEntity);
+	if (host_id < 1 || host_id > static_cast<int>(api->GetMaxClients()))
+	{
+		RETURN_META(MRES_IGNORED);
+	}
+
 	auto _host_client = api->GetClient(host_id-1);
 	client_t* cl;
 	float cl_interptime = 0.f;
@@ -165,7 +179,7 @@ void (PlayerPreThinkPre)(edict_t* pEntity)
 	vec3_t maxs;
 
 	nofind = 1;
-	if (_host_client->fakeclient)
+	if (!_host_client || !_host_client->active || !_host_client->edict || _host_client->fakeclient)
 		RETURN_META(MRES_IGNORED);
 
 	if (!MDLL_AllowLagCompensation() || sv_unlag->value == 0.0f || !_host_client->lw || !_host_client->lc)
@@ -512,9 +526,7 @@ void HL_StudioProcessGait(player_anim_params_s& params)
 	if (!g_pstudiohdr)
 		return;
 
-	pseqdesc = (mstudioseqdesc_t*)((byte*)g_pstudiohdr + g_pstudiohdr->seqindex) + params.sequence;
-
-	if (params.sequence >= g_pstudiohdr->numseq)
+	if (params.sequence < 0 || params.sequence >= g_pstudiohdr->numseq)
 		params.sequence = 0;
 
 	float dt = params.m_clTime - params.m_clOldTime;
@@ -569,10 +581,15 @@ void HL_StudioProcessGait(player_anim_params_s& params)
 	if (params.final_angles[1] < -0) params.final_angles[1] += 360.0f;
 	params.prevangles[1] = params.final_angles[1];
 
-	if (params.gaitsequence >= g_pstudiohdr->numseq)
+	if (params.gaitsequence < 0 || params.gaitsequence >= g_pstudiohdr->numseq)
 		params.gaitsequence = 0;
 
 	pseqdesc = (mstudioseqdesc_t*)((byte*)g_pstudiohdr + g_pstudiohdr->seqindex) + params.gaitsequence;
+	if (pseqdesc->numframes <= 0)
+	{
+		params.gaitframe = 0.0f;
+		return;
+	}
 
 	// calc gait frame
 	if (pseqdesc->linearmovement[0] > 0)
@@ -608,7 +625,15 @@ void StudioProcessGait(player_anim_params_s& params)
 	if (!pstudiohdr)
 		return;
 
+	if (params.gaitsequence < 0 || params.gaitsequence >= pstudiohdr->numseq)
+		params.gaitsequence = 0;
+
 	pseqdesc = (mstudioseqdesc_t*)((byte*)pstudiohdr + pstudiohdr->seqindex) + params.gaitsequence;
+	if (pseqdesc->numframes <= 0)
+	{
+		params.gaitframe = 0.0f;
+		return;
+	}
 
 	// calc gait frame
 	if (pseqdesc->linearmovement.x > 0.0f)
@@ -910,11 +935,16 @@ void PlayerPostThinkPost(edict_t* pEntity)
 {
 	nofind = 0;	
 
+	if (!api)
+	{
+		RETURN_META(MRES_IGNORED);
+	}
+
 	auto maxclients = api->GetMaxClients();
 	for (int id = 1; id <= maxclients; id++)
 	{
 		auto cl = api->GetClient(id - 1);
-		if (!cl || !cl->active)
+		if (!cl || !cl->active || !cl->edict)
 			continue;
 
 		size_t frame_index = SV_UPDATE_MASK & (ServerFrameId);
@@ -927,14 +957,27 @@ void PlayerPostThinkPost(edict_t* pEntity)
 
 int	(AddToFullPackPost)(struct entity_state_s* state, int e, edict_t* ent, edict_t* host, int hostflags, int player, unsigned char* pSet)
 {
-	int i;
+	if (!api || !state || !ent || !host)
+	{
+		RETURN_META_VALUE(MRES_IGNORED, 0);
+	}
+
 	auto host_id = ENTINDEX(host);
+	if (host_id < 1 || host_id > static_cast<int>(api->GetMaxClients()))
+	{
+		RETURN_META_VALUE(MRES_IGNORED, 0);
+	}
+
 	auto _host_client = api->GetClient(host_id-1);
-	if (!player || ent == host)
+	if (!_host_client || !_host_client->active || !player || ent == host)
 	{
 		RETURN_META_VALUE(MRES_IGNORED, 0);
 	}
 	auto id = ENTINDEX(ent) - 1;
+	if (id < 0 || id >= static_cast<int>(api->GetMaxClients()))
+	{
+		RETURN_META_VALUE(MRES_IGNORED, 0);
+	}
 	ProcessAnimParams(id, host_id,
 		player_params_history[host_id].hist[SV_UPDATE_MASK & (_host_client->netchan.outgoing_sequence)][id],
 		player_params_history[host_id].hist[SV_UPDATE_MASK & (_host_client->netchan.outgoing_sequence - 1)][id],
@@ -1188,7 +1231,23 @@ bool OnMetaAttach()
 
 void OnMetaDetach()
 {
-	subhook_remove(Server_GetBlendingInterfaceHook);
-	(*orig_ppinterface)->SV_StudioSetupBones = orig_interface.SV_StudioSetupBones;
-	
+	if (Server_GetBlendingInterfaceHook)
+	{
+		subhook_remove(Server_GetBlendingInterfaceHook);
+	}
+	if (orig_ppinterface && *orig_ppinterface)
+	{
+		(*orig_ppinterface)->SV_StudioSetupBones = orig_interface.SV_StudioSetupBones;
+	}
+	if (dlsymHook)
+	{
+		subhook_remove(dlsymHook);
+	}
+#ifdef _WIN32
+	if (GetProcAddressHook)
+	{
+		subhook_remove(GetProcAddressHook);
+	}
+#endif
+
 }
